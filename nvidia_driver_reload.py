@@ -98,6 +98,30 @@ The script uses AUTHORITATIVE DETECTION instead of static process name matching:
 
 This intelligent approach works for ANY GPU workload without manual updates.
 
+## ENTERPRISE GPU SUPPORT (A100, H100, H200):
+
+The script automatically handles enterprise GPU components when present:
+
+1. **NVIDIA DCGM** (Data Center GPU Manager):
+   - Automatically stops nvidia-dcgm service before driver unload
+   - DCGM holds GPU device handles through NVML that block module unload
+   - Restarts service after driver reload for continued monitoring
+   - Reference: https://docs.nvidia.com/datacenter/dcgm/
+
+2. **nvidia-peermem** (GPUDirect RDMA for HPC/InfiniBand):
+   - Automatically unloads if present (HPC clusters with Mellanox OFED)
+   - Correct module order: nvidia_uvm → nvidia-peermem → nvidia
+   - Only present on systems with InfiniBand/RoCE networking
+   - Reference: https://docs.nvidia.com/cuda/gpudirect-rdma/
+
+3. **Fabric Manager** (NVSwitch/NVLink systems):
+   - Required for DGX A100/H100/H200 and HGX platforms
+   - Must be stopped before driver unload, restarted after
+   - Version must match driver version exactly
+
+All enterprise components are detected automatically - if not present, they are
+silently skipped. No configuration needed.
+
 ## KERNEL COMPATIBILITY:
 
 The script checks for known kernel issues:
@@ -171,15 +195,22 @@ CONFIG = {
 
     # Module configuration
     # Order matters! Unload from top to bottom
+    # Research reference: https://docs.nvidia.com/multi-node-nvlink-systems/mnnvl-user-guide/deploying.html
     'nvidia_modules': [
         'nvidia_drm',
         'nvidia_modeset',
         'nvidia_uvm',
+        'nvidia_peermem',  # GPUDirect RDMA (optional, only present on HPC/InfiniBand systems)
         'nvidia',
     ],
 
     # Services to stop before module unload
+    # Research: DCGM holds GPU device handles through NVML, preventing module unload
+    # Reference: https://docs.nvidia.com/datacenter/tesla/fabric-manager-user-guide/
     'services_to_stop': [
+        'nvidia-dcgm',           # MANDATORY - Data Center GPU Manager (holds GPU handles)
+        'dcgm',                  # Alias for nvidia-dcgm on older versions
+        'dcgm-exporter',         # Prometheus metrics exporter (if running)
         'nvidia-persistenced',
         'nvidia-fabricmanager',  # For multi-GPU NVLink systems
     ],
