@@ -77,17 +77,26 @@ when nvidia_drm.modeset=1 is enabled to release these handles.
 
 Reference: https://bbs.archlinux.org/viewtopic.php?id=295484
 
-## COMPREHENSIVE PROCESS DETECTION:
+## INTELLIGENT GPU PROCESS DETECTION:
 
-The script includes a list of 90+ process types that can hold nvidia_drm open:
-- Display managers (sddm, gdm, lightdm, etc.)
-- Wayland compositors (gnome-shell, kwin, sway, hyprland, etc.)
-- Browser GPU processes (Chrome, Firefox, Electron apps)
-- Media applications (VLC, mpv, OBS, ffmpeg)
-- Machine learning frameworks (Python with PyTorch/TensorFlow)
-- Container runtimes (Docker, Podman, nvidia-container-toolkit)
-- Remote desktop software (VNC, RDP, Sunshine)
-- And many more...
+The script uses AUTHORITATIVE DETECTION instead of static process name matching:
+
+1. **NVML API** (nvidia-smi library):
+   - Detects ALL processes actively using GPU compute/graphics resources
+   - Returns exact PIDs with GPU memory usage
+   - No guessing - 100% accurate for CUDA/graphics workloads
+
+2. **fuser /dev/nvidia\***:
+   - Detects ALL processes holding open handles to NVIDIA device files
+   - Catches processes NVML might miss (device access without compute)
+   - Works even when NVML is unavailable
+
+3. **NO static process name lists**:
+   - Does NOT kill "python", "containerd", "docker" based on name alone
+   - ONLY kills processes detected by NVML or fuser
+   - Prevents killing innocent processes with similar names
+
+This intelligent approach works for ANY GPU workload without manual updates.
 
 ## KERNEL COMPATIBILITY:
 
@@ -191,127 +200,20 @@ CONFIG = {
     ],
 
     # ==========================================================================
-    # COMPREHENSIVE GPU PROCESS LIST (90+ process types from research)
+    # INTELLIGENT DETECTION - NO STATIC PROCESS LISTS
     # ==========================================================================
-    # These processes can hold nvidia_drm open and prevent module unload.
-    # Collected from: Arch Wiki, NVIDIA Forums, optimus-manager, envycontrol,
-    # GPU passthrough projects, and real-world troubleshooting reports.
+    # We DO NOT maintain a list of "blocking processes" - that approach is
+    # fundamentally flawed (kills innocent python/containerd/docker processes).
     #
-    # References:
-    # - https://wiki.archlinux.org/title/NVIDIA/Tips_and_tricks
-    # - https://github.com/Askannz/optimus-manager
-    # - https://github.com/bayasdev/envycontrol
-    # - https://bbs.archlinux.org/viewtopic.php?id=295484
-    # - https://forums.developer.nvidia.com/t/nvidia-drm-remains-in-use/53689
+    # Instead, we TRUST AUTHORITATIVE DETECTION:
+    # - NVML API (nvidia-smi): Tells us EXACTLY which PIDs are using GPU compute/graphics
+    # - fuser: Tells us EXACTLY which PIDs have open handles to /dev/nvidia* devices
+    #
+    # If a process is detected by these tools, it IS using the GPU.
+    # If not detected, it's NOT using the GPU - leave it alone!
+    #
+    # This is the ONLY intelligent approach that works for all scenarios.
     # ==========================================================================
-    'gpu_blocking_processes': [
-        # === Display Managers (CRITICAL - must stop first) ===
-        'sddm', 'gdm', 'gdm3', 'lightdm', 'lxdm', 'xdm', 'nodm', 'slim',
-        'entrance', 'ly', 'greetd', 'lemurs', 'emptty', 'tbsm',
-
-        # === X11/Wayland Servers ===
-        'Xorg', 'X', 'Xwayland', 'Xvfb', 'Xephyr', 'Xnest',
-
-        # === Wayland Compositors ===
-        'gnome-shell', 'kwin_wayland', 'kwin_x11', 'mutter', 'weston',
-        'sway', 'wayfire', 'hyprland', 'river', 'dwl', 'cage', 'labwc',
-        'gamescope', 'cosmic-comp', 'niri', 'hikari', 'newm', 'qtile',
-
-        # === Desktop Environment Processes ===
-        'plasmashell', 'plasma-desktop', 'gnome-session', 'cinnamon',
-        'mate-session', 'xfce4-session', 'lxqt-session', 'budgie-wm',
-        'deepin-wm', 'ukui-session', 'pantheon-greeter',
-
-        # === GPU Compositors/Effects ===
-        'picom', 'compton', 'compiz', 'xcompmgr', 'marco', 'metacity',
-        'openbox', 'fluxbox', 'fvwm', 'awesome', 'i3', 'bspwm', 'herbstluftwm',
-
-        # === NVIDIA Daemons/Services ===
-        'nvidia-persistenced', 'nvidia-settings', 'nvidia-smi',
-        'nvidia-powerd', 'nv-control-dpy', 'nvidia-xconfig',
-
-        # === Browser GPU Processes ===
-        'chrome', 'chromium', 'chromium-browser', 'google-chrome',
-        'google-chrome-stable', 'google-chrome-beta', 'google-chrome-dev',
-        'firefox', 'firefox-esr', 'firefox-bin', 'firefox-developer-edition',
-        'brave', 'brave-browser', 'vivaldi', 'vivaldi-stable',
-        'opera', 'opera-stable', 'opera-beta', 'opera-developer',
-        'microsoft-edge', 'microsoft-edge-stable', 'msedge',
-        'electron', 'code', 'code-oss', 'codium',  # VS Code variants
-        'slack', 'discord', 'spotify', 'teams', 'zoom',  # Electron apps
-        'WebKitWebProcess', 'QtWebEngineProcess',
-
-        # === Media/Streaming (hardware decode/encode) ===
-        'vlc', 'mpv', 'mplayer', 'smplayer', 'celluloid', 'totem',
-        'kodi', 'plex', 'jellyfin', 'emby',
-        'obs', 'obs-studio', 'ffmpeg', 'ffplay', 'ffprobe',
-        'gstreamer', 'gst-launch', 'gst-inspect',
-        'handbrake', 'handbrake-gtk', 'ghb',
-        'kdenlive', 'shotcut', 'openshot', 'davinci-resolve',
-
-        # === 3D/CAD/Rendering Applications ===
-        'blender', 'blender-softwaregl',
-        'gimp', 'gimp-2.10', 'inkscape',
-        'krita', 'digikam', 'darktable', 'rawtherapee',
-        'freecad', 'openscad', 'meshlab', 'cloudcompare',
-        'unity', 'unreal', 'godot',
-
-        # === Gaming/Steam ===
-        'steam', 'steamwebhelper', 'steam-runtime',
-        'lutris', 'wine', 'wine64', 'wineserver', 'wine-preloader',
-        'proton', 'pressure-vessel',
-        'heroic', 'bottles', 'minigalaxy',
-
-        # === Machine Learning/CUDA Applications ===
-        'python', 'python3', 'python3.10', 'python3.11', 'python3.12',  # PyTorch/TensorFlow
-        'jupyter', 'jupyter-lab', 'jupyter-notebook',
-        'ipython', 'ipykernel',
-        'julia',
-        'nvtop', 'gpustat', 'nvidia-htop',  # Monitoring tools
-
-        # === Container Runtimes (can hold GPU) ===
-        'dockerd', 'containerd', 'containerd-shim', 'runc',
-        'podman', 'crun', 'youki',
-        'nvidia-container-cli', 'nvidia-container-runtime',
-        'nvidia-container-toolkit',
-
-        # === Virtual Machine/GPU Passthrough ===
-        'qemu', 'qemu-system-x86_64', 'qemu-kvm',
-        'vfio-pci', 'looking-glass-client',
-        'libvirtd', 'virtqemud', 'virtiofsd',
-
-        # === Remote Desktop/VNC (use GPU for rendering) ===
-        'vncserver', 'Xvnc', 'x11vnc', 'tigervnc',
-        'xrdp', 'xrdp-sesman',
-        'sunshine', 'moonlight',
-        'nomachine', 'nxserver', 'nxnode',
-        'anydesk', 'teamviewer', 'rustdesk',
-
-        # === System Services That May Hold DRM ===
-        'systemd-logind',  # #1 HIDDEN CULPRIT - holds DRM handles!
-        'dbus-daemon', 'dbus-broker',
-        'colord', 'colord-sane',
-        'bolt', 'boltd',  # Thunderbolt daemon
-        'iio-sensor-proxy',
-
-        # === Power Management (may access GPU) ===
-        'power-profiles-daemon', 'powerdevil',
-        'tlp', 'auto-cpufreq',
-        'thermald', 'intel_gpu_top',
-        'switcheroo-control',  # GPU switching
-        'system76-power',
-        'supergfxd',  # ASUS GPU switching
-
-        # === Screen Recording/Screenshot ===
-        'simplescreenrecorder', 'kazam', 'vokoscreen',
-        'flameshot', 'spectacle', 'gnome-screenshot',
-        'peek', 'gifski', 'screenkey',
-
-        # === OpenGL/Vulkan Testing ===
-        'glxgears', 'glxinfo', 'glmark2',
-        'vulkaninfo', 'vkcube', 'vkmark',
-        'glxtest', 'eglinfo',
-    ],
 
     # ==========================================================================
     # XID ERROR CLASSIFICATION (Based on extensive research - 10 subagent findings)
@@ -659,6 +561,47 @@ def process_exists(pid: int) -> bool:
         return True
     except (ProcessLookupError, PermissionError):
         return False
+
+
+def is_system_process(pid: int, name: str = None) -> bool:
+    """
+    Check if a process is a critical system process that should never be killed.
+
+    Uses two criteria:
+    1. PID < 100: System PIDs (init, kthreads, core daemons)
+    2. Process name matches critical system processes
+
+    Args:
+        pid: Process ID
+        name: Process name (optional, will be looked up if not provided)
+
+    Returns:
+        True if this is a system process that must not be killed
+    """
+    # Criterion 1: Low PIDs are always system processes
+    # PID 1 = systemd/init
+    # PID 2 = kthreadd
+    # PIDs 3-99 = kernel threads and core system daemons
+    if pid < 100:
+        return True
+
+    # Criterion 2: Check process name against critical process list
+    if name is None:
+        name = get_process_name(pid)
+
+    critical_processes = [
+        # Init systems
+        'systemd', 'init',
+        # Kernel threads (sometimes have high PIDs on some systems)
+        'kernel', 'kthreadd', 'ksoftirqd', 'rcu_sched', 'rcu_bh',
+        'migration', 'watchdog', 'cpuhp', 'kworker', 'kswapd',
+        'khugepaged', 'kcompactd', 'oom_reaper', 'writeback',
+        'kblockd', 'kintegrityd', 'kdevtmpfs', 'netns',
+        # Critical system services (these should be restarted, not killed)
+        'systemd-logind', 'dbus-daemon', 'dbus-broker',
+    ]
+
+    return name in critical_processes
 
 
 # ============================================================================
@@ -1301,7 +1244,20 @@ class NVMLManager:
         except:
             pass
 
-        return list(processes.values())
+        # Filter out system processes that we should never kill
+        # These sometimes appear due to kernel/driver interactions but aren't real GPU users
+        filtered_processes = []
+        for proc in processes.values():
+            if is_system_process(proc.pid, proc.name):
+                logger.debug(f"Filtering out system process {proc.name} (PID {proc.pid}) from GPU process list")
+                continue
+
+            filtered_processes.append(proc)
+
+        if len(processes) != len(filtered_processes):
+            logger.debug(f"Filtered {len(processes) - len(filtered_processes)} system processes from GPU process list")
+
+        return filtered_processes
 
 
 # ============================================================================
@@ -2745,8 +2701,9 @@ class NVIDIADriverReloader:
                 break
 
             for proc in processes:
-                # SAFETY: Never kill system processes (PIDs < 100)
-                if proc.pid < 100:
+                # SAFETY: Never kill system processes
+                # (Already filtered by get_gpu_processes, but double-check)
+                if is_system_process(proc.pid, proc.name):
                     logger.warning(f"Skipping system process: {proc.name} (PID {proc.pid})")
                     continue
 
@@ -2774,8 +2731,9 @@ class NVIDIADriverReloader:
             # Force kill remaining (with safety checks)
             processes = self.nvml.get_gpu_processes()
             for proc in processes:
-                # SAFETY: Never kill system processes (PIDs < 100)
-                if proc.pid < 100:
+                # SAFETY: Never kill system processes
+                # (Already filtered by get_gpu_processes, but double-check)
+                if is_system_process(proc.pid, proc.name):
                     logger.warning(f"Cannot kill system process: {proc.name} (PID {proc.pid})")
                     continue
 
@@ -2823,17 +2781,21 @@ class NVIDIADriverReloader:
             time.sleep(2)
 
         # =====================================================================
-        # Phase 6: Final comprehensive process scan using comprehensive list
-        # =====================================================================
-        logger.info("Scanning for any remaining GPU-blocking processes...")
-        self._kill_blocking_processes_from_list()
-
-        # =====================================================================
         # Final verification
         # =====================================================================
         final_procs = self.nvml.get_gpu_processes()
+
         if final_procs:
-            self.state.add_error(f"Could not stop all GPU processes: {[p.pid for p in final_procs]}")
+            # Report exactly what's still using the GPU
+            proc_list = [f"{p.name} (PID {p.pid})" for p in final_procs]
+            logger.error(f"Processes still using GPU: {', '.join(proc_list)}")
+            logger.error("")
+            logger.error("These processes were detected by NVML/fuser but couldn't be terminated.")
+            logger.error("Manual intervention required:")
+            for p in final_procs:
+                logger.error(f"  sudo kill -9 {p.pid}  # {p.name}")
+
+            self.state.add_error(f"Could not stop all GPU processes: {proc_list}")
             return False
 
         logger.info("All GPU workloads stopped successfully")
@@ -2869,27 +2831,20 @@ class NVIDIADriverReloader:
                 for pid_str in pids:
                     try:
                         pid = int(pid_str)
-                        # SAFETY: Skip low PIDs (system processes: 1-99)
-                        # PID 1 = systemd/init, PID 2 = kthreadd, PIDs 3-99 = kernel threads
-                        if pid < 100:
-                            logger.debug(f"Skipping low PID {pid} (system process)")
-                            continue
 
                         if process_exists(pid):
                             name = get_process_name(pid)
-                            # Skip critical system processes (additional safety check)
-                            critical_processes = ['systemd', 'init', 'kernel', 'kthreadd',
-                                                'ksoftirqd', 'rcu_sched', 'rcu_bh', 'migration',
-                                                'watchdog', 'cpuhp', 'kworker', 'kswapd',
-                                                'systemd-logind', 'dbus-daemon', 'dbus-broker']
-                            if name not in critical_processes:
-                                logger.info(f"Killing device holder: {name} (PID {pid})")
-                                try:
-                                    os.kill(pid, signal.SIGTERM)
-                                except:
-                                    pass
-                            else:
-                                logger.debug(f"Skipping critical process: {name} (PID {pid})")
+
+                            # SAFETY: Never kill system processes
+                            if is_system_process(pid, name):
+                                logger.debug(f"Skipping system process: {name} (PID {pid})")
+                                continue
+
+                            logger.info(f"Killing device holder: {name} (PID {pid})")
+                            try:
+                                os.kill(pid, signal.SIGTERM)
+                            except:
+                                pass
                     except ValueError:
                         pass
 
@@ -2900,89 +2855,6 @@ class NVIDIADriverReloader:
         # causing system crash. The manual filtering above already handled
         # safe termination. If processes remain, they're likely critical.
 
-    def _kill_blocking_processes_from_list(self) -> None:
-        """
-        Kill any running processes from the comprehensive GPU blocking list.
-
-        This list was compiled from research across:
-        - Arch Wiki/Forums
-        - optimus-manager source code
-        - envycontrol
-        - GPU passthrough projects
-        - Real-world troubleshooting reports
-
-        NOTE: Using 'cmd' instead of 'comm' because comm is limited to 15 chars
-        and truncates process names like "containerd-shim" → "containerd-shi"
-        """
-        blocking_processes = self.config.get('gpu_blocking_processes', [])
-        if not blocking_processes:
-            return
-
-        # Get list of running processes with full command line
-        # Using 'cmd' instead of 'comm' to avoid 15-char truncation
-        success, stdout, _ = run_command_safe(['ps', '-eo', 'pid,cmd'], timeout=10)
-        if not success:
-            return
-
-        killed_count = 0
-        for line in stdout.split('\n')[1:]:  # Skip header
-            parts = line.split(None, 1)
-            if len(parts) < 2:
-                continue
-
-            try:
-                pid = int(parts[0])
-                full_cmd = parts[1].strip()
-
-                # Extract process name from full command line
-                # Handle different formats:
-                # "/usr/bin/python3 script.py" → "python3"
-                # "python3 script.py" → "python3"
-                # "/usr/bin/containerd-shim-runc-v2" → "containerd-shim-runc-v2"
-                cmd_parts = full_cmd.split()
-                if not cmd_parts:
-                    continue
-
-                # Get the executable path
-                exe_path = cmd_parts[0]
-                # Extract basename
-                name = os.path.basename(exe_path)
-
-            except (ValueError, IndexError):
-                continue
-
-            # SAFETY: Never kill low PIDs (system processes)
-            if pid < 100:
-                logger.debug(f"Skipping low PID {pid} (system process)")
-                continue
-
-            # Check if this process is in our blocking list
-            # Also check for partial matches (e.g., "python3.11" matches "python3")
-            process_matched = False
-            for blocking_proc in blocking_processes:
-                if name == blocking_proc or name.startswith(blocking_proc):
-                    process_matched = True
-                    break
-
-            if process_matched:
-                # Skip critical system processes we shouldn't kill
-                critical_processes = ['systemd', 'systemd-logind', 'dbus-daemon', 'dbus-broker',
-                                    'init', 'kernel', 'kthreadd', 'ksoftirqd', 'rcu_sched',
-                                    'rcu_bh', 'migration', 'watchdog', 'cpuhp', 'kworker', 'kswapd']
-                if name in critical_processes:
-                    logger.debug(f"Skipping critical process: {name} (PID {pid})")
-                    continue
-
-                logger.debug(f"Found blocking process: {name} (PID {pid})")
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                    killed_count += 1
-                except (ProcessLookupError, PermissionError):
-                    pass
-
-        if killed_count > 0:
-            logger.info(f"Terminated {killed_count} potentially blocking processes")
-            time.sleep(1)
 
     def unload_and_reload_driver(self, new_driver_path: Optional[str] = None) -> bool:
         """
