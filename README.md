@@ -18,14 +18,26 @@ This tool gracefully stops GPU workloads, unloads/reloads kernel modules, and re
 # Check current status
 sudo python3 nvidia_driver_reload.py --status
 
-# Dry run (see what would happen)
-sudo python3 nvidia_driver_reload.py --reload --dry-run
+# Update driver via package manager first
+sudo apt-get update && sudo apt-get install nvidia-driver-550
 
-# Full driver reload
+# Then reload without rebooting
 sudo python3 nvidia_driver_reload.py --reload --yes
 
-# GPU reset only (lighter, faster)
+# Or just do a GPU reset (lighter, faster)
 sudo python3 nvidia_driver_reload.py --reset
+```
+
+## Workflow
+
+1. **Update driver** via your package manager (`apt`, `yum`, `dnf`)
+2. **Run this tool** to reload the driver without rebooting
+3. **Done** — new driver is active, workloads restarted
+
+```bash
+# Example: upgrade from 535 to 550
+sudo apt-get install nvidia-driver-550
+sudo python3 nvidia_driver_reload.py --reload --yes
 ```
 
 ## Features
@@ -34,11 +46,16 @@ sudo python3 nvidia_driver_reload.py --reset
 - **Intelligent process detection** — Uses NVML API and `fuser` to find *actual* GPU users, not static process lists
 - **Container-aware** — Gracefully stops Docker/Podman GPU containers, restarts daemons, restarts containers
 - **Enterprise GPU support** — Automatically handles DCGM, nvidia-peermem, and Fabric Manager
-- **Install new drivers** — Install a `.run` driver file and reload without reboot
 - **Smart error detection** — Detects when reboot is actually required (XID 79, hardware failures)
 - **Handles nvidia_drm.modeset=1** — Unbinds VT consoles and framebuffer automatically
 - **Rollback support** — Saves state before operations, can rollback on failure
 - **Safe by design** — Never kills system processes, uses authoritative detection only
+
+## ⚠️ H100/H200 Warning
+
+**CRITICAL:** NVIDIA drivers < 535 have a silent data corruption bug when reloading on H100/H200 GPUs. Reloading `nvidia.ko` causes incorrect computation results with no errors reported.
+
+**Recommendation:** Upgrade to driver 535+ before using this tool on H100/H200 systems.
 
 ## Installation
 
@@ -60,11 +77,14 @@ sudo python3 nvidia_driver_reload.py --status
 # Comprehensive health check
 sudo python3 nvidia_driver_reload.py --verify
 
+# Dry run (see what would happen)
+sudo python3 nvidia_driver_reload.py --reload --dry-run
+
 # Full driver reload (stops workloads, unloads modules, reloads, restarts)
 sudo python3 nvidia_driver_reload.py --reload
 
-# Install new driver and reload
-sudo python3 nvidia_driver_reload.py --reload --driver /path/to/NVIDIA-Linux-x86_64-550.127.08.run
+# Skip confirmation prompt (for automation)
+sudo python3 nvidia_driver_reload.py --reload --yes
 
 # GPU reset only (faster, doesn't unload modules)
 sudo python3 nvidia_driver_reload.py --reset
@@ -90,7 +110,6 @@ sudo python3 nvidia_driver_reload.py --rollback
 | `--stop` | Stop all GPU workloads |
 | `--start` | Restart stopped workloads |
 | `--rollback` | Rollback from failed state |
-| `--driver PATH` | Install driver .run file before reload |
 | `--yes`, `-y` | Skip confirmation prompts |
 | `--dry-run` | Show what would happen |
 | `--verbose`, `-v` | Verbose output |
@@ -120,12 +139,11 @@ pip install psutil         # Process detection
 5. **Restart systemd-logind** — Releases DRM handles (the #1 hidden culprit)
 6. **Handle modeset** — Unbind VT consoles and framebuffer if nvidia_drm.modeset=1
 7. **Unload modules** — nvidia_drm → nvidia_modeset → nvidia_uvm → nvidia_peermem → nvidia
-8. **Install driver** — (optional) Run the .run installer
-9. **Load modules** — nvidia → nvidia_peermem → nvidia_uvm → nvidia_modeset → nvidia_drm
-10. **Rebind console** — Restore framebuffer and VT consoles
-11. **Verify driver** — Comprehensive nvidia-smi health check
-12. **Restart Docker** — Required to refresh nvidia-container-toolkit paths
-13. **Restart containers** — Bring back GPU workloads
+8. **Load modules** — nvidia → nvidia_peermem → nvidia_uvm → nvidia_modeset → nvidia_drm
+9. **Rebind console** — Restore framebuffer and VT consoles
+10. **Verify driver** — Comprehensive nvidia-smi health check
+11. **Restart Docker** — Required to refresh nvidia-container-toolkit paths
+12. **Restart containers** — Bring back GPU workloads
 
 ## Enterprise GPU Support (A100, H100, H200)
 
@@ -192,6 +210,7 @@ The script automatically detects scenarios where reload won't work:
 - **CUDA state lost** — No checkpoint/restore, running CUDA jobs are killed
 - **NVLink systems** — Fabric Manager version must match driver
 - **Screen blanks** — Expected during modeset=1 unbind (console comes back)
+- **H100/H200 driver < 535** — Silent data corruption bug on reload (upgrade first!)
 
 ## Files
 
