@@ -86,7 +86,7 @@ The script uses AUTHORITATIVE DETECTION instead of static process name matching:
    - Returns exact PIDs with GPU memory usage
    - No guessing - 100% accurate for CUDA/graphics workloads
 
-2. **fuser /dev/nvidia\***:
+2. **fuser /dev/nvidia*:**
    - Detects ALL processes holding open handles to NVIDIA device files
    - Catches processes NVML might miss (device access without compute)
    - Works even when NVML is unavailable
