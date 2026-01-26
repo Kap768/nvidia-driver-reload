@@ -2745,6 +2745,11 @@ class NVIDIADriverReloader:
                 break
 
             for proc in processes:
+                # SAFETY: Never kill system processes (PIDs < 100)
+                if proc.pid < 100:
+                    logger.warning(f"Skipping system process: {proc.name} (PID {proc.pid})")
+                    continue
+
                 if proc.is_display_process:
                     if not self.config['force_kill_display_processes']:
                         self.state.add_error(
@@ -2766,9 +2771,14 @@ class NVIDIADriverReloader:
 
             time.sleep(self.config['process_kill_timeout'] // 3)
 
-            # Force kill remaining
+            # Force kill remaining (with safety checks)
             processes = self.nvml.get_gpu_processes()
             for proc in processes:
+                # SAFETY: Never kill system processes (PIDs < 100)
+                if proc.pid < 100:
+                    logger.warning(f"Cannot kill system process: {proc.name} (PID {proc.pid})")
+                    continue
+
                 logger.warning(f"Force killing: {proc.name} (PID {proc.pid})")
                 try:
                     os.kill(proc.pid, signal.SIGKILL)
@@ -2859,23 +2869,36 @@ class NVIDIADriverReloader:
                 for pid_str in pids:
                     try:
                         pid = int(pid_str)
-                        if pid > 1 and process_exists(pid):
+                        # SAFETY: Skip low PIDs (system processes: 1-99)
+                        # PID 1 = systemd/init, PID 2 = kthreadd, PIDs 3-99 = kernel threads
+                        if pid < 100:
+                            logger.debug(f"Skipping low PID {pid} (system process)")
+                            continue
+
+                        if process_exists(pid):
                             name = get_process_name(pid)
-                            # Skip critical system processes
-                            if name not in ['systemd', 'init', 'kernel']:
+                            # Skip critical system processes (additional safety check)
+                            critical_processes = ['systemd', 'init', 'kernel', 'kthreadd',
+                                                'ksoftirqd', 'rcu_sched', 'rcu_bh', 'migration',
+                                                'watchdog', 'cpuhp', 'kworker', 'kswapd',
+                                                'systemd-logind', 'dbus-daemon', 'dbus-broker']
+                            if name not in critical_processes:
                                 logger.info(f"Killing device holder: {name} (PID {pid})")
                                 try:
                                     os.kill(pid, signal.SIGTERM)
                                 except:
                                     pass
+                            else:
+                                logger.debug(f"Skipping critical process: {name} (PID {pid})")
                     except ValueError:
                         pass
 
         time.sleep(1)
 
-        # Force kill any remaining
-        for pattern in device_patterns:
-            run_command_safe(['fuser', '-k', '-SIGKILL', pattern], timeout=10)
+        # REMOVED: fuser -k is DANGEROUS - it will kill ALL processes including
+        # systemd (PID 1), kthreadd (PID 2), and kernel threads (PIDs 3-7)
+        # causing system crash. The manual filtering above already handled
+        # safe termination. If processes remain, they're likely critical.
 
     def _kill_blocking_processes_from_list(self) -> None:
         """
@@ -2887,13 +2910,17 @@ class NVIDIADriverReloader:
         - envycontrol
         - GPU passthrough projects
         - Real-world troubleshooting reports
+
+        NOTE: Using 'cmd' instead of 'comm' because comm is limited to 15 chars
+        and truncates process names like "containerd-shim" → "containerd-shi"
         """
         blocking_processes = self.config.get('gpu_blocking_processes', [])
         if not blocking_processes:
             return
 
-        # Get list of running process names
-        success, stdout, _ = run_command_safe(['ps', '-eo', 'pid,comm'], timeout=10)
+        # Get list of running processes with full command line
+        # Using 'cmd' instead of 'comm' to avoid 15-char truncation
+        success, stdout, _ = run_command_safe(['ps', '-eo', 'pid,cmd'], timeout=10)
         if not success:
             return
 
@@ -2905,15 +2932,45 @@ class NVIDIADriverReloader:
 
             try:
                 pid = int(parts[0])
-                name = parts[1].strip()
-            except ValueError:
+                full_cmd = parts[1].strip()
+
+                # Extract process name from full command line
+                # Handle different formats:
+                # "/usr/bin/python3 script.py" → "python3"
+                # "python3 script.py" → "python3"
+                # "/usr/bin/containerd-shim-runc-v2" → "containerd-shim-runc-v2"
+                cmd_parts = full_cmd.split()
+                if not cmd_parts:
+                    continue
+
+                # Get the executable path
+                exe_path = cmd_parts[0]
+                # Extract basename
+                name = os.path.basename(exe_path)
+
+            except (ValueError, IndexError):
+                continue
+
+            # SAFETY: Never kill low PIDs (system processes)
+            if pid < 100:
+                logger.debug(f"Skipping low PID {pid} (system process)")
                 continue
 
             # Check if this process is in our blocking list
-            if name in blocking_processes:
+            # Also check for partial matches (e.g., "python3.11" matches "python3")
+            process_matched = False
+            for blocking_proc in blocking_processes:
+                if name == blocking_proc or name.startswith(blocking_proc):
+                    process_matched = True
+                    break
+
+            if process_matched:
                 # Skip critical system processes we shouldn't kill
-                skip_list = ['systemd', 'systemd-logind', 'dbus-daemon', 'dbus-broker']
-                if name in skip_list:
+                critical_processes = ['systemd', 'systemd-logind', 'dbus-daemon', 'dbus-broker',
+                                    'init', 'kernel', 'kthreadd', 'ksoftirqd', 'rcu_sched',
+                                    'rcu_bh', 'migration', 'watchdog', 'cpuhp', 'kworker', 'kswapd']
+                if name in critical_processes:
+                    logger.debug(f"Skipping critical process: {name} (PID {pid})")
                     continue
 
                 logger.debug(f"Found blocking process: {name} (PID {pid})")
