@@ -33,6 +33,7 @@ sudo python3 nvidia_driver_reload.py --reset
 - **Hot-reload drivers** — Unload and reload kernel modules in the correct order
 - **Intelligent process detection** — Uses NVML API and `fuser` to find *actual* GPU users, not static process lists
 - **Container-aware** — Gracefully stops Docker/Podman GPU containers, restarts daemons, restarts containers
+- **Enterprise GPU support** — Automatically handles DCGM, nvidia-peermem, and Fabric Manager
 - **Install new drivers** — Install a `.run` driver file and reload without reboot
 - **Smart error detection** — Detects when reboot is actually required (XID 79, hardware failures)
 - **Handles nvidia_drm.modeset=1** — Unbinds VT consoles and framebuffer automatically
@@ -114,17 +115,29 @@ pip install psutil         # Process detection
 
 1. **Detect GPU state** — Check for fatal errors, running processes, module usage
 2. **Stop GPU containers** — Gracefully stop Docker/Podman containers using GPU
-3. **Stop services** — nvidia-persistenced, nvidia-fabricmanager
+3. **Stop services** — nvidia-dcgm, nvidia-persistenced, nvidia-fabricmanager
 4. **Kill GPU processes** — Only processes detected by NVML/fuser (not by name)
 5. **Restart systemd-logind** — Releases DRM handles (the #1 hidden culprit)
 6. **Handle modeset** — Unbind VT consoles and framebuffer if nvidia_drm.modeset=1
-7. **Unload modules** — nvidia_drm → nvidia_modeset → nvidia_uvm → nvidia
+7. **Unload modules** — nvidia_drm → nvidia_modeset → nvidia_uvm → nvidia_peermem → nvidia
 8. **Install driver** — (optional) Run the .run installer
-9. **Load modules** — nvidia → nvidia_uvm → nvidia_modeset → nvidia_drm
+9. **Load modules** — nvidia → nvidia_peermem → nvidia_uvm → nvidia_modeset → nvidia_drm
 10. **Rebind console** — Restore framebuffer and VT consoles
 11. **Verify driver** — Comprehensive nvidia-smi health check
 12. **Restart Docker** — Required to refresh nvidia-container-toolkit paths
 13. **Restart containers** — Bring back GPU workloads
+
+## Enterprise GPU Support (A100, H100, H200)
+
+The script automatically handles enterprise GPU components when present:
+
+| Component | Purpose | Handling |
+|-----------|---------|----------|
+| **NVIDIA DCGM** | Data Center GPU Manager — monitoring/metrics | Stopped before unload (holds GPU handles via NVML), restarted after |
+| **nvidia-peermem** | GPUDirect RDMA for HPC/InfiniBand clusters | Unloaded in correct order (after nvidia_uvm, before nvidia) |
+| **Fabric Manager** | NVSwitch/NVLink for DGX/HGX systems | Stopped before unload, restarted after (version must match driver) |
+
+All components are **auto-detected** — if not present, they're silently skipped. No configuration needed.
 
 ## Intelligent Process Detection
 
@@ -196,6 +209,9 @@ The script automatically detects scenarios where reload won't work:
 - [Arch Wiki: NVIDIA Tips](https://wiki.archlinux.org/title/NVIDIA/Tips_and_tricks)
 - [Arch Forums: nvidia_drm unload](https://bbs.archlinux.org/viewtopic.php?id=295484)
 - [NVIDIA XID Errors](https://docs.nvidia.com/deploy/xid-errors/)
+- [NVIDIA DCGM Documentation](https://docs.nvidia.com/datacenter/dcgm/)
+- [GPUDirect RDMA](https://docs.nvidia.com/cuda/gpudirect-rdma/)
+- [Fabric Manager User Guide](https://docs.nvidia.com/datacenter/tesla/fabric-manager-user-guide/)
 - [optimus-manager](https://github.com/Askannz/optimus-manager)
 - [GPU Passthrough Scripts](https://github.com/QaidVoid/Complete-Single-GPU-Passthrough)
 
