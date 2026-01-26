@@ -1,14 +1,14 @@
 # nvidia-driver-reload
 
-Reload NVIDIA drivers **without rebooting** on headless Linux servers.
+Reload NVIDIA drivers **without rebooting** on headless Linux GPU servers.
 
 ## Why?
 
-Driver updates, version mismatches, and stuck GPU states typically require a full server reboot. On production GPU servers with long-running workloads, that means:
+Driver updates, version mismatches, and stuck GPU states typically require a full server reboot. On production GPU servers, that means:
 
-- Killing customer containers
+- Killing running workloads
 - Minutes of downtime
-- Lost rental revenue
+- Lost compute time / rental revenue
 
 This tool gracefully stops GPU workloads, unloads/reloads kernel modules, and restarts everything — no reboot required.
 
@@ -31,12 +31,13 @@ sudo python3 nvidia_driver_reload.py --reset
 ## Features
 
 - **Hot-reload drivers** — Unload and reload kernel modules in the correct order
-- **Docker-aware** — Gracefully stops GPU containers, restarts Docker daemon, restarts containers
+- **Intelligent process detection** — Uses NVML API and `fuser` to find *actual* GPU users, not static process lists
+- **Container-aware** — Gracefully stops Docker/Podman GPU containers, restarts daemons, restarts containers
 - **Install new drivers** — Install a `.run` driver file and reload without reboot
 - **Smart error detection** — Detects when reboot is actually required (XID 79, hardware failures)
 - **Handles nvidia_drm.modeset=1** — Unbinds VT consoles and framebuffer automatically
 - **Rollback support** — Saves state before operations, can rollback on failure
-- **Comprehensive process detection** — Finds 90+ process types that hold GPU handles
+- **Safe by design** — Never kills system processes, uses authoritative detection only
 
 ## Installation
 
@@ -45,7 +46,7 @@ sudo python3 nvidia_driver_reload.py --reset
 curl -O https://raw.githubusercontent.com/YOUR_USERNAME/nvidia-driver-reload/main/nvidia_driver_reload.py
 chmod +x nvidia_driver_reload.py
 
-# Optional: better GPU detection and Docker control
+# Optional: better GPU detection and container control
 pip install nvidia-ml-py docker psutil
 ```
 
@@ -58,7 +59,7 @@ sudo python3 nvidia_driver_reload.py --status
 # Comprehensive health check
 sudo python3 nvidia_driver_reload.py --verify
 
-# Full driver reload (stops containers, unloads modules, reloads, restarts)
+# Full driver reload (stops workloads, unloads modules, reloads, restarts)
 sudo python3 nvidia_driver_reload.py --reload
 
 # Install new driver and reload
@@ -112,15 +113,43 @@ pip install psutil         # Process detection
 ## How It Works
 
 1. **Detect GPU state** — Check for fatal errors, running processes, module usage
-2. **Stop GPU workloads** — Gracefully stop Docker containers, kill GPU processes
+2. **Stop GPU containers** — Gracefully stop Docker/Podman containers using GPU
 3. **Stop services** — nvidia-persistenced, nvidia-fabricmanager
-4. **Handle modeset** — Unbind VT consoles and framebuffer if nvidia_drm.modeset=1
-5. **Unload modules** — nvidia_drm → nvidia_modeset → nvidia_uvm → nvidia
-6. **Install driver** — (optional) Run the .run installer
-7. **Load modules** — nvidia → nvidia_uvm → nvidia_modeset → nvidia_drm
-8. **Rebind console** — Restore framebuffer and VT consoles
-9. **Restart Docker** — Required to refresh nvidia-container-toolkit paths
-10. **Restart containers** — Bring back GPU workloads
+4. **Kill GPU processes** — Only processes detected by NVML/fuser (not by name)
+5. **Restart systemd-logind** — Releases DRM handles (the #1 hidden culprit)
+6. **Handle modeset** — Unbind VT consoles and framebuffer if nvidia_drm.modeset=1
+7. **Unload modules** — nvidia_drm → nvidia_modeset → nvidia_uvm → nvidia
+8. **Install driver** — (optional) Run the .run installer
+9. **Load modules** — nvidia → nvidia_uvm → nvidia_modeset → nvidia_drm
+10. **Rebind console** — Restore framebuffer and VT consoles
+11. **Verify driver** — Comprehensive nvidia-smi health check
+12. **Restart Docker** — Required to refresh nvidia-container-toolkit paths
+13. **Restart containers** — Bring back GPU workloads
+
+## Intelligent Process Detection
+
+This tool does **NOT** use static process name lists (which kill innocent `python`, `docker`, `containerd` processes). Instead, it uses authoritative detection:
+
+| Method | What it catches |
+|--------|-----------------|
+| **NVML API** | All processes actively using GPU compute/graphics resources |
+| **fuser /dev/nvidia*** | All processes holding open handles to NVIDIA device files |
+
+If a process isn't detected by these tools, it's not using the GPU — leave it alone. This approach works for any GPU workload without manual updates:
+
+- CUDA applications
+- PyTorch/TensorFlow training jobs
+- Docker containers with `--gpus`
+- Podman GPU containers
+- QEMU/KVM GPU passthrough
+- FFmpeg hardware encoding
+- Any other GPU workload
+
+### Safety Guarantees
+
+- Never kills PIDs < 100 (kernel threads, init)
+- Never kills critical system processes (systemd, dbus, kworker, etc.)
+- Only terminates processes confirmed to be holding GPU resources
 
 ## When Reboot Is Required
 
@@ -141,6 +170,8 @@ The script automatically detects scenarios where reload won't work:
 | 48, 74, 95, 119 | Recoverable | GPU reset works |
 | 31, 43, 45, 68, 69, 94 | App fault | Just restart application |
 | 61, 62, 63, 64, 92 | Info | Monitor, usually fine |
+
+**Key insight:** Many XIDs previously thought "fatal" are actually recoverable. The script uses timestamp filtering to avoid false positives from old dmesg entries.
 
 ## Limitations
 
@@ -163,7 +194,10 @@ The script automatically detects scenarios where reload won't work:
 - [CUDA Driver Reload Guide](https://zyao.net/linux/2024/09/29/cuda-driver-reload/)
 - [nvidia-container-toolkit #169](https://github.com/NVIDIA/nvidia-container-toolkit/issues/169)
 - [Arch Wiki: NVIDIA Tips](https://wiki.archlinux.org/title/NVIDIA/Tips_and_tricks)
+- [Arch Forums: nvidia_drm unload](https://bbs.archlinux.org/viewtopic.php?id=295484)
 - [NVIDIA XID Errors](https://docs.nvidia.com/deploy/xid-errors/)
+- [optimus-manager](https://github.com/Askannz/optimus-manager)
+- [GPU Passthrough Scripts](https://github.com/QaidVoid/Complete-Single-GPU-Passthrough)
 
 ## License
 
