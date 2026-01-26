@@ -134,6 +134,9 @@ The script checks for known kernel issues:
 - Multi-GPU NVLink systems need Fabric Manager version matching
 - Some corrupted GPU states require reboot (detected automatically)
 - Screen goes BLANK during modeset=1 unbind (this is expected)
+- H100 CRITICAL: Driver < 535 has silent data corruption bug on reload
+  (NVIDIA bug: reloading nvidia.ko causes incorrect computation results)
+  Recommendation: Upgrade to driver 535+ before using reload on H100/H200
 
 ## REQUIREMENTS:
 - Root privileges (sudo)
@@ -353,7 +356,6 @@ class ReloadPhase(Enum):
     STOPPING_SERVICES = "stopping_services"
     KILLING_PROCESSES = "killing_processes"
     UNLOADING_MODULES = "unloading_modules"
-    INSTALLING_DRIVER = "installing_driver"
     LOADING_MODULES = "loading_modules"
     STARTING_SERVICES = "starting_services"
     RESTARTING_DOCKER = "restarting_docker"
@@ -2887,9 +2889,16 @@ class NVIDIADriverReloader:
         # safe termination. If processes remain, they're likely critical.
 
 
-    def unload_and_reload_driver(self, new_driver_path: Optional[str] = None) -> bool:
+    def unload_and_reload_driver(self) -> bool:
         """
-        Phase 4 & 5: Unload modules, optionally install driver, reload modules
+        Phase 4-6: Unload modules, reload modules
+
+        NOTE: Users should update drivers BEFORE running this script via:
+        - apt-get update && apt-get upgrade (Ubuntu/Debian)
+        - yum update (RHEL/CentOS)
+        - Or run NVIDIA .run file manually
+
+        This script only reloads the already-installed driver.
         """
         # Shutdown NVML before unloading
         self.nvml.shutdown()
@@ -2904,25 +2913,18 @@ class NVIDIADriverReloader:
             self.state.add_error("Failed to unload all NVIDIA kernel modules")
             return False
 
-        # Phase 5: Install new driver if specified
-        if new_driver_path:
-            self.state.set_phase(ReloadPhase.INSTALLING_DRIVER)
-            if not self._install_driver(new_driver_path):
-                self.state.add_error("Driver installation failed")
-                return False
-
-        # Phase 6: Reload kernel modules
+        # Phase 5: Reload kernel modules (loads from /usr/lib/modules automatically)
         self.state.set_phase(ReloadPhase.LOADING_MODULES)
         if not self.kernel.reload_all_nvidia_modules():
             self.state.add_error("Failed to reload NVIDIA kernel modules")
             return False
 
-        # Phase 6b: Ensure device files exist
+        # Phase 5b: Ensure device files exist
         # Reference: https://github.com/NVIDIA/open-gpu-kernel-modules/discussions/336
         if not self.nvml.ensure_device_files_exist():
             logger.warning("Device file creation had issues, but continuing...")
 
-        # Phase 6c: Comprehensive verification
+        # Phase 5c: Comprehensive verification
         # This is the critical step - verify nvidia-smi actually works
         logger.info("Performing comprehensive driver verification...")
         health_ok, verification_results = self.nvml.verify_nvidia_smi_works()
@@ -2943,34 +2945,6 @@ class NVIDIADriverReloader:
         logger.info(f"  GPUs: {verification_results.get('gpu_count', 0)}")
 
         return True
-
-    def _install_driver(self, driver_path: str) -> bool:
-        """Install NVIDIA driver from .run file"""
-        if not os.path.exists(driver_path):
-            logger.error(f"Driver file not found: {driver_path}")
-            return False
-
-        logger.info(f"Installing driver: {driver_path}")
-
-        # Make executable
-        os.chmod(driver_path, 0o755)
-
-        # Run installer
-        try:
-            result = run_command(
-                [driver_path, '--silent', '--no-questions', '--ui=none',
-                 '--no-backup', '--no-nouveau-check', '--disable-nouveau',
-                 '--no-cc-version-check', '--no-kernel-module-source-install'],
-                timeout=600
-            )
-            logger.info("Driver installation completed")
-            return True
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Driver installation failed: {e}")
-            return False
-        except subprocess.TimeoutExpired:
-            logger.error("Driver installation timed out")
-            return False
 
     def restart_workloads(self) -> bool:
         """
@@ -3034,7 +3008,6 @@ class NVIDIADriverReloader:
 
     def perform_full_reload(
         self,
-        new_driver_path: Optional[str] = None,
         skip_confirmation: bool = False,
         dry_run: bool = False
     ) -> bool:
@@ -3042,6 +3015,9 @@ class NVIDIADriverReloader:
         Perform complete driver reload sequence.
 
         This is the main entry point for driver hot-reload.
+
+        NOTE: Update drivers FIRST via package manager (apt-get/yum) or
+        manually run NVIDIA .run file, then use this script to reload.
         """
         if not check_root():
             return False
@@ -3081,11 +3057,9 @@ class NVIDIADriverReloader:
             print("  2. Stop services:", self.config['services_to_stop'])
             print("  3. Kill GPU processes:", [p['pid'] for p in status['processes']])
             print("  4. Unload modules:", status['modules']['loaded'])
-            if new_driver_path:
-                print(f"  5. Install driver: {new_driver_path}")
-            print("  6. Reload modules")
-            print("  7. Restart Docker")
-            print("  8. Restart containers")
+            print("  5. Reload modules (from /usr/lib/modules)")
+            print("  6. Restart Docker")
+            print("  7. Restart containers")
             return True
 
         # Confirmation
@@ -3104,8 +3078,8 @@ class NVIDIADriverReloader:
                 self.rollback()
                 return False
 
-            print("\n[Phase 4-6/9] Reloading driver...")
-            if not self.unload_and_reload_driver(new_driver_path):
+            print("\n[Phase 4-5/9] Reloading driver...")
+            if not self.unload_and_reload_driver():
                 logger.error("Failed to reload driver")
                 self.rollback()
                 return False
@@ -3188,10 +3162,8 @@ EXAMPLES:
   sudo python3 nvidia_driver_reload.py --status
 
   # Perform full driver reload (unload/reload modules)
+  # NOTE: Update driver FIRST via apt-get/yum, then run this script
   sudo python3 nvidia_driver_reload.py --reload
-
-  # Install new driver and reload
-  sudo python3 nvidia_driver_reload.py --reload --driver /path/to/NVIDIA-Linux-x86_64-XXX.run
 
   # Perform GPU reset only (lighter than full reload)
   sudo python3 nvidia_driver_reload.py --reset
@@ -3237,8 +3209,6 @@ REFERENCES:
     actions.add_argument('--rollback', action='store_true',
                         help='Rollback from failed reload using saved state')
 
-    parser.add_argument('--driver', '-d', type=str, metavar='PATH',
-                        help='Path to NVIDIA driver .run file to install')
     parser.add_argument('--yes', '-y', action='store_true',
                         help='Skip confirmation prompts')
     parser.add_argument('--dry-run', action='store_true',
@@ -3342,7 +3312,6 @@ REFERENCES:
 
             if args.reload:
                 success = reloader.perform_full_reload(
-                    new_driver_path=args.driver,
                     skip_confirmation=args.yes,
                     dry_run=args.dry_run
                 )
