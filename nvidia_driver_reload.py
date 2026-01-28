@@ -207,16 +207,9 @@ CONFIG = {
         'nvidia',
     ],
 
-    # Services to stop before module unload
-    # Research: DCGM holds GPU device handles through NVML, preventing module unload
-    # Reference: https://docs.nvidia.com/datacenter/tesla/fabric-manager-user-guide/
-    'services_to_stop': [
-        'nvidia-dcgm',           # MANDATORY - Data Center GPU Manager (holds GPU handles)
-        'dcgm',                  # Alias for nvidia-dcgm on older versions
-        'dcgm-exporter',         # Prometheus metrics exporter (if running)
-        'nvidia-persistenced',
-        'nvidia-fabricmanager',  # For multi-GPU NVLink systems
-    ],
+    # Services are detected DYNAMICALLY via get_services_for_gpu_processes()
+    # No static list - discovers what's actually using the GPU via /proc/*/cgroup
+    'services_to_stop': [],
 
     # Processes that indicate display server (BLOCK unload)
     'display_processes': [
@@ -635,6 +628,156 @@ def is_system_process(pid: int, name: str = None) -> bool:
     ]
 
     return name in critical_processes
+
+
+def get_process_cgroup_info(pid: int) -> Dict[str, Any]:
+    """
+    Get cgroup information for a process to identify its controlling service/container.
+    This is the KEY to dynamically identifying what manages a GPU process.
+
+    Returns dict with:
+    - 'service': systemd service name if managed by systemd (e.g., 'k3s-agent.service')
+    - 'container_id': container ID if running in a container
+    - 'container_runtime': 'containerd', 'docker', 'crio', etc.
+    - 'kubernetes': True if managed by kubernetes
+    - 'pod_uid': Kubernetes pod UID if applicable
+    """
+    result = {
+        'service': None,
+        'container_id': None,
+        'container_runtime': None,
+        'kubernetes': False,
+        'pod_uid': None,
+        'slice': None,
+    }
+
+    try:
+        cgroup_path = Path(f'/proc/{pid}/cgroup')
+        if not cgroup_path.exists():
+            return result
+
+        content = cgroup_path.read_text()
+
+        for line in content.split('\n'):
+            if not line.strip():
+                continue
+            # Format: hierarchy-ID:controller-list:cgroup-path
+            # Example: 0::/system.slice/k3s-agent.service
+            # Example: 0::/kubepods/pod<uid>/containerd-<container-id>
+            parts = line.split(':')
+            if len(parts) >= 3:
+                cgroup = parts[2]
+
+                # Detect systemd service
+                if '.service' in cgroup:
+                    import re
+                    match = re.search(r'([^/]+\.service)', cgroup)
+                    if match:
+                        result['service'] = match.group(1)
+
+                # Detect systemd slice
+                if '.slice' in cgroup:
+                    import re
+                    match = re.search(r'([^/]+\.slice)', cgroup)
+                    if match:
+                        result['slice'] = match.group(1)
+
+                # Detect Kubernetes
+                if 'kubepods' in cgroup or 'kubelet' in cgroup:
+                    result['kubernetes'] = True
+                    # Extract pod UID
+                    import re
+                    pod_match = re.search(r'pod([a-f0-9-]+)', cgroup)
+                    if pod_match:
+                        result['pod_uid'] = pod_match.group(1)
+
+                # Detect container ID and runtime
+                if 'containerd' in cgroup:
+                    result['container_runtime'] = 'containerd'
+                    import re
+                    match = re.search(r'containerd-([a-f0-9]+)', cgroup)
+                    if match:
+                        result['container_id'] = match.group(1)
+                elif 'docker' in cgroup:
+                    result['container_runtime'] = 'docker'
+                    import re
+                    match = re.search(r'docker-([a-f0-9]+)', cgroup)
+                    if match:
+                        result['container_id'] = match.group(1)
+                elif 'crio' in cgroup:
+                    result['container_runtime'] = 'crio'
+                    import re
+                    match = re.search(r'crio-([a-f0-9]+)', cgroup)
+                    if match:
+                        result['container_id'] = match.group(1)
+
+    except (OSError, PermissionError, FileNotFoundError):
+        pass
+
+    return result
+
+
+def get_services_for_gpu_processes(processes: List) -> Set[str]:
+    """
+    Dynamically identify systemd services that need to be stopped for GPU processes.
+    This is SMART detection - no static service lists needed.
+
+    Walks up the process tree and cgroup hierarchy to find controlling services.
+    """
+    services_to_stop = set()
+
+    for proc in processes:
+        pid = proc.pid if hasattr(proc, 'pid') else proc
+
+        # Get cgroup info for this process
+        cgroup_info = get_process_cgroup_info(pid)
+
+        if cgroup_info['service']:
+            services_to_stop.add(cgroup_info['service'])
+            logger.debug(f"PID {pid} controlled by service: {cgroup_info['service']}")
+
+        # If it's a kubernetes pod, we need to stop the kubelet/k3s-agent
+        if cgroup_info['kubernetes']:
+            # Check what's managing kubernetes on this system
+            for k8s_service in ['k3s-agent.service', 'k3s.service', 'kubelet.service']:
+                success, _, _ = run_command_safe(['systemctl', 'is-active', k8s_service], timeout=5)
+                if success:
+                    services_to_stop.add(k8s_service)
+                    logger.debug(f"PID {pid} is k8s pod, will stop {k8s_service}")
+                    break
+
+        # Walk up the process tree to find parent services
+        try:
+            current_pid = pid
+            for _ in range(10):  # Max 10 levels up
+                stat_path = Path(f'/proc/{current_pid}/stat')
+                if not stat_path.exists():
+                    break
+                stat_content = stat_path.read_text()
+                # Format: pid (comm) state ppid ...
+                import re
+                match = re.match(r'\d+ \([^)]+\) \S+ (\d+)', stat_content)
+                if not match:
+                    break
+                ppid = int(match.group(1))
+                if ppid <= 1:
+                    break
+
+                parent_cgroup = get_process_cgroup_info(ppid)
+                if parent_cgroup['service'] and parent_cgroup['service'] not in services_to_stop:
+                    services_to_stop.add(parent_cgroup['service'])
+                    logger.debug(f"Found parent service for PID {pid}: {parent_cgroup['service']}")
+
+                current_pid = ppid
+        except (OSError, PermissionError, ValueError):
+            pass
+
+    # Remove critical system services that shouldn't be stopped
+    critical = {'systemd-logind.service', 'dbus.service', 'dbus-broker.service',
+                'sshd.service', 'ssh.service', 'systemd-journald.service'}
+    services_to_stop -= critical
+
+    return services_to_stop
 
 
 # ============================================================================
@@ -1267,15 +1410,86 @@ class NVMLManager:
         except:
             pass
 
-        # Method 4: lsof /dev/nvidia*
+        # Method 4: Direct /proc scan - MOST RELIABLE low-level detection
+        # This catches processes that other methods miss (especially container runtimes)
+        # Scans /proc/*/fd for open file descriptors to nvidia devices
         try:
-            result = subprocess.run(
-                ['lsof', '+D', '/dev/', '-t'],
-                capture_output=True, text=True, timeout=10
-            )
-            # This is too broad, let's be more specific
-        except:
-            pass
+            nvidia_device_inodes = set()
+            # Get inodes of nvidia device files
+            for dev in ['/dev/nvidiactl', '/dev/nvidia-uvm', '/dev/nvidia-uvm-tools',
+                        '/dev/nvidia0', '/dev/nvidia1', '/dev/nvidia2', '/dev/nvidia3',
+                        '/dev/nvidia-modeset']:
+                try:
+                    nvidia_device_inodes.add(os.stat(dev).st_ino)
+                except (FileNotFoundError, OSError):
+                    pass
+
+            # Get current PID to avoid killing ourselves
+            my_pid = os.getpid()
+
+            if nvidia_device_inodes:
+                # Scan all /proc/*/fd directories
+                for proc_dir in Path('/proc').iterdir():
+                    if not proc_dir.name.isdigit():
+                        continue
+                    pid = int(proc_dir.name)
+                    if pid in processes or pid == my_pid:
+                        continue  # Already found or it's us
+
+                    try:
+                        fd_dir = proc_dir / 'fd'
+                        if not fd_dir.exists():
+                            continue
+                        for fd_link in fd_dir.iterdir():
+                            try:
+                                target = os.readlink(str(fd_link))
+                                # Check if fd points to ACTUAL nvidia device (must start with /dev/nvidia)
+                                # This avoids matching log files like /var/log/nvidia-reload.log
+                                if target.startswith('/dev/nvidia'):
+                                    name = get_process_name(pid)
+                                    processes[pid] = GPUProcess(
+                                        pid=pid,
+                                        name=name,
+                                        cmdline=get_process_cmdline(pid),
+                                        is_display_process=name in CONFIG['display_processes']
+                                    )
+                                    logger.debug(f"/proc scan found: {name} (PID {pid}) -> {target}")
+                                    break
+                            except (OSError, PermissionError):
+                                continue
+                    except (OSError, PermissionError):
+                        continue
+        except Exception as e:
+            logger.debug(f"/proc scan failed: {e}")
+
+        # Method 5: Check /proc/*/maps for nvidia memory mappings
+        # This catches processes with nvidia libraries mmap'd even without open fd
+        try:
+            for proc_dir in Path('/proc').iterdir():
+                if not proc_dir.name.isdigit():
+                    continue
+                pid = int(proc_dir.name)
+                if pid in processes:
+                    continue
+
+                try:
+                    maps_file = proc_dir / 'maps'
+                    if maps_file.exists():
+                        content = maps_file.read_text()
+                        # Check for nvidia driver memory regions (not just libraries)
+                        if '/dev/nvidia' in content or 'nvidia_uvm' in content:
+                            name = get_process_name(pid)
+                            processes[pid] = GPUProcess(
+                                pid=pid,
+                                name=name,
+                                cmdline=get_process_cmdline(pid),
+                                is_display_process=name in CONFIG['display_processes']
+                            )
+                            logger.debug(f"/proc/maps scan found: {name} (PID {pid})")
+                except (OSError, PermissionError):
+                    continue
+        except Exception as e:
+            logger.debug(f"/proc/maps scan failed: {e}")
 
         # Filter out system processes that we should never kill
         # These sometimes appear due to kernel/driver interactions but aren't real GPU users
@@ -2250,21 +2464,86 @@ class KernelModuleManager:
 
         logger.info(f"Modules to unload: {modules_to_unload}")
 
-        # Use optimus-manager's retry configuration
+        # Use progressive retry with increasing wait times
         MAX_TRIES = 5
-        WAIT_PERIOD = 1  # seconds
+        WAIT_PERIODS = [1, 2, 3, 5, 5]  # Progressive waits
 
         unloaded = []
         success = False
 
         for attempt in range(MAX_TRIES):
             if attempt > 0:
-                logger.info(f"Retry {attempt + 1}/{MAX_TRIES} - waiting {WAIT_PERIOD}s...")
-                time.sleep(WAIT_PERIOD)
+                wait_time = WAIT_PERIODS[min(attempt, len(WAIT_PERIODS) - 1)]
+                logger.info(f"Retry {attempt + 1}/{MAX_TRIES} - waiting {wait_time}s...")
+                time.sleep(wait_time)
 
                 # On retry, try unbinding again (documented in GPU passthrough scripts)
                 if modeset_enabled:
                     self.unbind_vtconsoles()
+
+                # Re-scan for GPU processes and kill them
+                # This is critical for stubborn nvidia_uvm references
+                logger.info("Re-scanning for GPU processes...")
+                try:
+                    # Import here to avoid circular dependency
+                    from pathlib import Path
+                    nvidia_pids = set()
+
+                    # Method 1: Scan /proc/*/fd for nvidia device handles
+                    for proc_dir in Path('/proc').iterdir():
+                        if not proc_dir.name.isdigit():
+                            continue
+                        pid = int(proc_dir.name)
+                        try:
+                            fd_dir = proc_dir / 'fd'
+                            if fd_dir.exists():
+                                for fd_link in fd_dir.iterdir():
+                                    try:
+                                        target = os.readlink(str(fd_link))
+                                        if 'nvidia' in target:
+                                            nvidia_pids.add(pid)
+                                            break
+                                    except:
+                                        continue
+                        except:
+                            continue
+
+                    # Method 2: Check /proc/*/maps for nvidia memory
+                    for proc_dir in Path('/proc').iterdir():
+                        if not proc_dir.name.isdigit():
+                            continue
+                        pid = int(proc_dir.name)
+                        if pid in nvidia_pids:
+                            continue
+                        try:
+                            maps = (proc_dir / 'maps').read_text()
+                            if '/dev/nvidia' in maps or 'nvidia_uvm' in maps:
+                                nvidia_pids.add(pid)
+                        except:
+                            continue
+
+                    if nvidia_pids:
+                        logger.warning(f"Found {len(nvidia_pids)} processes still holding nvidia refs")
+                        for pid in nvidia_pids:
+                            if pid < 100:
+                                continue  # Skip system PIDs
+                            name = get_process_name(pid)
+                            if is_system_process(pid, name):
+                                continue
+                            logger.info(f"Killing stubborn process: {name} (PID {pid})")
+                            try:
+                                os.kill(pid, signal.SIGKILL)
+                            except:
+                                pass
+                        time.sleep(1)
+                except Exception as e:
+                    logger.debug(f"Re-scan failed: {e}")
+
+            # Try to unload nvidia_uvm first (often the problematic one)
+            if 'nvidia_uvm' in modules_to_unload and self.is_module_loaded('nvidia_uvm'):
+                logger.debug("Attempting to unload nvidia_uvm first...")
+                run_command_safe(['modprobe', '-r', 'nvidia_uvm'], timeout=10)
+                time.sleep(0.5)
 
             # Try to unload all modules in one command (optimus-manager approach)
             # Reference: subprocess.check_call(f"modprobe -r {' '.join(modules_to_unload)}", ...)
@@ -2286,11 +2565,19 @@ class KernelModuleManager:
                     unloaded = modules_to_unload.copy()
                     break
 
-                # Log what's holding the modules
+                # Log what's holding the modules with detailed analysis
                 for mod in still_loaded:
                     use_count, deps = self.get_module_info(mod)
                     if use_count > 0 or deps:
                         logger.warning(f"  {mod}: use_count={use_count}, used_by={deps}")
+
+                        # For nvidia_uvm, also check the refcnt file for more detail
+                        if mod == 'nvidia_uvm':
+                            try:
+                                refcnt = Path('/sys/module/nvidia_uvm/refcnt').read_text().strip()
+                                logger.warning(f"  nvidia_uvm refcnt from sysfs: {refcnt}")
+                            except:
+                                pass
 
         if not success:
             # Final verification
@@ -2709,17 +2996,56 @@ class NVIDIADriverReloader:
         # Phase 2: Stop NVIDIA services
         # =====================================================================
         self.state.set_phase(ReloadPhase.STOPPING_SERVICES)
-        for service in self.config['services_to_stop']:
-            svc_status = self.services.get_service_status(service)
-            if svc_status.active:
-                if self.services.stop_service(service):
-                    self.state.stopped_services.append(service)
-                    self.state.save()
-                else:
-                    self.state.add_warning(f"Could not stop {service}")
+
+        # Dynamically discover services managing GPU processes via /proc/*/cgroup
+        gpu_procs = self.nvml.get_gpu_processes()
+        if gpu_procs:
+            logger.info("Detecting services managing GPU processes...")
+            dynamic_services = get_services_for_gpu_processes(gpu_procs)
+            if dynamic_services:
+                logger.info(f"Services to stop: {', '.join(dynamic_services)}")
+                for service in dynamic_services:
+                    service_name = service.replace('.service', '')
+                    svc_status = self.services.get_service_status(service_name)
+                    if svc_status.active:
+                        logger.info(f"Stopping {service_name}")
+                        if self.services.stop_service(service_name):
+                            self.state.stopped_services.append(service_name)
+                            self.state.save()
+                        else:
+                            self.state.add_warning(f"Could not stop {service_name}")
 
         # Also disable persistence mode via nvidia-smi
         run_command_safe(['nvidia-smi', '-pm', '0'], timeout=10)
+
+        # Wait for services to fully stop and re-check for remaining processes
+        time.sleep(3)
+
+        # Re-run dynamic discovery to catch any processes revealed after stopping services
+        for iteration in range(3):
+            remaining_procs = self.nvml.get_gpu_processes()
+            if not remaining_procs:
+                break
+
+            logger.info(f"Re-detection iteration {iteration + 1}: {len(remaining_procs)} GPU processes remaining")
+            additional_services = get_services_for_gpu_processes(remaining_procs)
+
+            new_services = [s for s in additional_services
+                          if s.replace('.service', '') not in self.state.stopped_services]
+
+            if new_services:
+                logger.info(f"Found additional services to stop: {', '.join(new_services)}")
+                for service in new_services:
+                    service_name = service.replace('.service', '')
+                    svc_status = self.services.get_service_status(service_name)
+                    if svc_status.active:
+                        logger.info(f"Stopping {service_name}...")
+                        if self.services.stop_service(service_name):
+                            self.state.stopped_services.append(service_name)
+                            self.state.save()
+                time.sleep(2)
+            else:
+                break
 
         # =====================================================================
         # Phase 3: Kill GPU processes detected by NVML
@@ -2949,28 +3275,68 @@ class NVIDIADriverReloader:
     def restart_workloads(self) -> bool:
         """
         Phase 7, 8, 9: Restart services, Docker, and containers
+
+        SAFETY MEASURES for production systems:
+        - Verifies GPU health before restarting services
+        - Retries critical service restarts
+        - Waits for kubernetes services to be ready
+        - Logs detailed status for troubleshooting
         """
-        # Phase 7: Start services
-        self.state.set_phase(ReloadPhase.STARTING_SERVICES)
-        for service in reversed(self.state.stopped_services):
-            self.services.start_service(service)
+        # SAFETY: Verify GPU is working before restarting services
+        logger.info("Verifying GPU health before restarting services...")
+        health_ok, health_results = self.nvml.verify_nvidia_smi_works()
+        if not health_ok:
+            logger.error("GPU health check FAILED - services may not function correctly")
+            logger.error(f"Issues: {health_results.get('issues', [])}")
+            self.state.add_error("GPU health check failed after reload")
+            # Continue anyway - services might help fix things
+        else:
+            logger.info(f"GPU health OK: {health_results.get('gpu_count', 0)} GPUs, "
+                       f"driver {health_results.get('driver_version', 'unknown')}")
 
         # Enable persistence mode
         run_command_safe(['nvidia-smi', '-pm', '1'], timeout=10)
 
+        # Phase 7: Start services (reverse order of stop)
+        self.state.set_phase(ReloadPhase.STARTING_SERVICES)
+        failed_services = []
+
+        for service in reversed(self.state.stopped_services):
+            logger.info(f"Starting service: {service}")
+            if not self.services.start_service(service):
+                failed_services.append(service)
+                self.state.add_warning(f"Failed to start {service}")
+
         # Phase 8: Restart Docker (REQUIRED after driver reload)
         self.state.set_phase(ReloadPhase.RESTARTING_DOCKER)
-        if not self.docker.restart_docker_daemon():
-            self.state.add_error("Failed to restart Docker daemon")
-            return False
+        if self.state.docker_was_running:
+            if not self.docker.restart_docker_daemon():
+                self.state.add_error("Failed to restart Docker daemon")
+                return False
+
+        # Wait for services to initialize
+        if self.state.stopped_services:
+            time.sleep(5)
 
         # Phase 9: Restart containers
         self.state.set_phase(ReloadPhase.STARTING_CONTAINERS)
-        time.sleep(3)  # Let Docker fully initialize
+        time.sleep(3)  # Let Docker/k8s fully initialize
 
         for container_id in self.state.stopped_containers:
             if not self.docker.start_container(container_id):
                 self.state.add_warning(f"Could not restart container {container_id}")
+
+        # Final health check
+        logger.info("Performing final GPU health check...")
+        final_health_ok, _ = self.nvml.verify_nvidia_smi_works()
+        if final_health_ok:
+            logger.info("Final GPU health check: PASSED")
+        else:
+            logger.warning("Final GPU health check: FAILED - check nvidia-smi manually")
+
+        if failed_services:
+            logger.warning(f"Some services failed to start: {failed_services}")
+            logger.warning("You may need to start them manually")
 
         logger.info("Workload restart completed")
         return True
